@@ -1,0 +1,5 @@
+node_modules/
+dist/
+
+# Contains hardcoded local credential paths — never commit
+scripts/.mcp.json
