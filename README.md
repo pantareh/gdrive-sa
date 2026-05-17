@@ -8,11 +8,34 @@ The official `@modelcontextprotocol/server-gdrive` package uses OAuth, which req
 
 ## Prerequisites
 
-1. **Google Cloud project** with the Drive API enabled.
-2. A **Service Account** with a downloaded JSON key file.
-3. The service account must have access to the files/folders it needs to read. Two ways to grant access:
-   - Share individual files or folders with the service account's email address (e.g. `my-sa@my-project.iam.gserviceaccount.com`).
-   - Use **Domain-wide delegation** if you need to impersonate a Workspace user (requires Workspace admin setup).
+### 1. Google Cloud project and APIs
+
+Create (or select) a project in [Google Cloud Console](https://console.cloud.google.com) and enable the following APIs under **APIs & Services → Library**:
+
+| API | Required for |
+|---|---|
+| **Google Drive API** | All tools |
+| **Google Docs API** | `update_doc`, `list_comments`, `add_comment` |
+| **Google Sheets API** | `update_sheet` |
+
+### 2. Service account
+
+1. Go to **IAM & Admin → Service Accounts** → **Create Service Account**.
+2. Download a **JSON key file** for the account.
+3. Set the path to that file in the `GOOGLE_APPLICATION_CREDENTIALS` environment variable.
+
+### 3. Granting file access
+
+Service accounts are not real users — they cannot see your Drive unless you explicitly share content with them.
+
+**Option A — share files or folders directly (recommended)**
+In Google Drive, right-click a file or folder → **Share** → paste the service account's email address (e.g. `my-sa@my-project.iam.gserviceaccount.com`).
+
+- Grant **Viewer** access for read-only tools (`read_file`, `search`, `list_folder`, `get_file_info`, `list_comments`).
+- Grant **Editor** (or **Commenter** for comments only) access for write tools (`update_file`, `update_doc`, `update_sheet`, `add_comment`).
+
+**Option B — Domain-wide delegation**
+Required only if the service account needs to impersonate a Google Workspace user. This requires Workspace admin configuration and is outside the scope of this guide.
 
 ## Installation
 
@@ -136,6 +159,19 @@ range             (required) A1 notation, e.g. "Sheet1!A1:C3"
 values            (required) 2D array of cell values
 valueInputOption  (optional) "RAW" or "USER_ENTERED" (default)
 ```
+
+### `style_text`
+Apply highlight and/or text color to all occurrences of matching text in a Google Doc.
+
+```
+fileId          (required) Google Doc file ID
+find            (required) Text to find and style
+highlightColor  (optional) Highlight (background) color as {red, green, blue} — each field 0–1
+textColor       (optional) Text (foreground) color as {red, green, blue} — each field 0–1
+matchCase       (optional) Case-sensitive match, default true
+```
+
+Colors are plain RGB objects — the calling agent is expected to supply the values (e.g. `{"red": 1, "green": 0.98, "blue": 0.39}` for yellow). In `update_doc` content mode, `==text==` markdown syntax maps to a yellow highlight automatically.
 
 ### `list_comments`
 List all comments and their replies on a Google Doc.

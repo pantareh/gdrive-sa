@@ -29,21 +29,24 @@ type NamedStyleType =
   | "HEADING_4" | "HEADING_5" | "HEADING_6"
   | "NORMAL_TEXT";
 
-interface TextRun { text: string; bold: boolean; italic: boolean }
+interface TextRun { text: string; bold: boolean; italic: boolean; highlight?: boolean }
 interface ParsedParagraph { namedStyleType: NamedStyleType; plainText: string; runs: TextRun[] }
+
+const YELLOW_RGB = { red: 1.0, green: 0.98, blue: 0.39 }; // used for ==highlight== markdown syntax
 
 function parseInlineRuns(text: string): TextRun[] {
   if (!text) return [{ text: "", bold: false, italic: false }];
   const runs: TextRun[] = [];
-  // Order matters: *** before ** before *
-  const re = /\*\*\*([^*]+)\*\*\*|\*\*([^*]+)\*\*|\*([^*]+)\*|_([^_]+)_|([^*_]+)/g;
+  // Order matters: *** before ** before *, ==highlight== last
+  const re = /\*\*\*([^*]+)\*\*\*|\*\*([^*]+)\*\*|\*([^*]+)\*|_([^_]+)_|==([^=]+)==|([^*_=]+)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    if (m[1] !== undefined) runs.push({ text: m[1], bold: true,  italic: true  });
+    if      (m[1] !== undefined) runs.push({ text: m[1], bold: true,  italic: true  });
     else if (m[2] !== undefined) runs.push({ text: m[2], bold: true,  italic: false });
     else if (m[3] !== undefined) runs.push({ text: m[3], bold: false, italic: true  });
     else if (m[4] !== undefined) runs.push({ text: m[4], bold: false, italic: true  });
-    else if (m[5] !== undefined) runs.push({ text: m[5], bold: false, italic: false });
+    else if (m[5] !== undefined) runs.push({ text: m[5], bold: false, italic: false, highlight: true });
+    else if (m[6] !== undefined) runs.push({ text: m[6], bold: false, italic: false });
   }
   return runs.length > 0 ? runs : [{ text, bold: false, italic: false }];
 }
@@ -89,15 +92,23 @@ function buildMarkdownRequests(paragraphs: ParsedParagraph[], bodyEndIndex: numb
       },
     });
 
-    // Inline bold / italic
+    // Inline bold / italic / highlight
     let runIdx = idx;
     for (const run of para.runs) {
-      if (run.text && (run.bold || run.italic)) {
-        const fields = [run.bold && "bold", run.italic && "italic"].filter(Boolean).join(",");
+      if (run.text && (run.bold || run.italic || run.highlight)) {
+        const fields = [
+          run.bold      && "bold",
+          run.italic    && "italic",
+          run.highlight && "backgroundColor",
+        ].filter(Boolean).join(",");
         requests.push({
           updateTextStyle: {
             range: { startIndex: runIdx, endIndex: runIdx + run.text.length },
-            textStyle: { ...(run.bold && { bold: true }), ...(run.italic && { italic: true }) },
+            textStyle: {
+              ...(run.bold      && { bold: true }),
+              ...(run.italic    && { italic: true }),
+              ...(run.highlight && { backgroundColor: { color: { rgbColor: YELLOW_RGB } } }),
+            },
             fields,
           },
         });
@@ -234,6 +245,21 @@ export function createServer(clients: DriveClients, rootFolderId?: string): Serv
             },
           },
           required: ["fileId", "range", "values"],
+        },
+      },
+      {
+        name: "style_text",
+        description: "Apply highlight and/or text color to all occurrences of matching text in a Google Doc. Colors are RGB objects with red, green, blue fields (each 0–1).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            fileId:         { type: "string",  description: "Google Doc file ID" },
+            find:           { type: "string",  description: "Text to find and style" },
+            highlightColor: { type: "object",  description: "Highlight (background) color as {red, green, blue} (0–1 each)", properties: { red: { type: "number" }, green: { type: "number" }, blue: { type: "number" } } },
+            textColor:      { type: "object",  description: "Text (foreground) color as {red, green, blue} (0–1 each)", properties: { red: { type: "number" }, green: { type: "number" }, blue: { type: "number" } } },
+            matchCase:      { type: "boolean", description: "Case-sensitive match (default true)" },
+          },
+          required: ["fileId", "find"],
         },
       },
       {
@@ -389,6 +415,52 @@ export function createServer(clients: DriveClients, rootFolderId?: string): Serv
         requestBody: { values },
       });
       return { content: [{ type: "text", text: `Range ${range} in spreadsheet ${fileId} updated` }] };
+    }
+
+    if (name === "style_text") {
+      type Rgb = { red: number; green: number; blue: number };
+      const { fileId, find, highlightColor, textColor, matchCase = true } = args as {
+        fileId: string; find: string; highlightColor?: Rgb; textColor?: Rgb; matchCase?: boolean;
+      };
+      const doc = await docs.documents.get({ documentId: fileId });
+      const requests: docs_v1.Schema$Request[] = [];
+      let matchCount = 0;
+
+      for (const elem of doc.data.body?.content ?? []) {
+        for (const pe of elem.paragraph?.elements ?? []) {
+          const run = pe.textRun;
+          if (!run?.content) continue;
+          const content = run.content;
+          let searchFrom = 0;
+          while (true) {
+            const idx = matchCase
+              ? content.indexOf(find, searchFrom)
+              : content.toLowerCase().indexOf(find.toLowerCase(), searchFrom);
+            if (idx === -1) break;
+            const startIndex = (pe.startIndex ?? 0) + idx;
+            const endIndex = startIndex + find.length;
+            const fields = [highlightColor && "backgroundColor", textColor && "foregroundColor"].filter(Boolean).join(",");
+            requests.push({
+              updateTextStyle: {
+                range: { startIndex, endIndex },
+                textStyle: {
+                  ...(highlightColor && { backgroundColor: { color: { rgbColor: highlightColor } } }),
+                  ...(textColor      && { foregroundColor: { color: { rgbColor: textColor } } }),
+                },
+                fields,
+              },
+            });
+            matchCount++;
+            searchFrom = idx + find.length;
+          }
+        }
+      }
+
+      if (requests.length === 0) {
+        return { content: [{ type: "text", text: `No occurrences of "${find}" found` }], isError: true };
+      }
+      await docs.documents.batchUpdate({ documentId: fileId, requestBody: { requests } });
+      return { content: [{ type: "text", text: `Styled ${matchCount} occurrence${matchCount === 1 ? "" : "s"} of "${find}"` }] };
     }
 
     if (name === "list_comments") {

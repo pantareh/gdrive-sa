@@ -178,7 +178,7 @@ describe("listTools", () => {
 
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(10);
     const names = tools.map((t) => t.name);
     expect(names).toContain("search");
     expect(names).toContain("list_folder");
@@ -187,6 +187,7 @@ describe("listTools", () => {
     expect(names).toContain("update_file");
     expect(names).toContain("update_doc");
     expect(names).toContain("update_sheet");
+    expect(names).toContain("style_text");
     expect(names).toContain("list_comments");
     expect(names).toContain("add_comment");
 
@@ -692,6 +693,173 @@ describe("update_sheet tool", () => {
     expect(mockClients.sheets.spreadsheets.values.update).toHaveBeenCalledWith(
       expect.objectContaining({ valueInputOption: "RAW" })
     );
+
+    await client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// style_text tool
+// ---------------------------------------------------------------------------
+
+describe("style_text tool", () => {
+  function makeDoc(textContent: string, startIndex = 1) {
+    return {
+      data: {
+        body: {
+          content: [{
+            paragraph: {
+              elements: [{
+                startIndex,
+                endIndex: startIndex + textContent.length,
+                textRun: { content: textContent },
+              }],
+            },
+          }],
+        },
+      },
+    };
+  }
+
+  it("applies highlight color to matching text", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue(makeDoc("Hello world"));
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({
+      name: "style_text",
+      arguments: { fileId: "doc-id", find: "Hello", highlightColor: { red: 1.0, green: 0.98, blue: 0.39 } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests;
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      updateTextStyle: {
+        range: { startIndex: 1, endIndex: 6 },
+        textStyle: { backgroundColor: { color: { rgbColor: expect.objectContaining({ red: 1.0 }) } } },
+        fields: "backgroundColor",
+      },
+    });
+
+    await client.close();
+  });
+
+  it("applies text color to matching text", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue(makeDoc("Hello world"));
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({
+      name: "style_text",
+      arguments: { fileId: "doc-id", find: "world", textColor: { red: 0.96, green: 0.26, blue: 0.21 } },
+    });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests;
+    expect(requests[0]).toMatchObject({
+      updateTextStyle: {
+        range: { startIndex: 7, endIndex: 12 },
+        fields: "foregroundColor",
+      },
+    });
+
+    await client.close();
+  });
+
+  it("applies both highlight and text color together", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue(makeDoc("Hello world"));
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({
+      name: "style_text",
+      arguments: { fileId: "doc-id", find: "Hello", highlightColor: { red: 0.27, green: 0.90, blue: 0.91 }, textColor: { red: 0.26, green: 0.52, blue: 0.96 } },
+    });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests;
+    expect(requests[0].updateTextStyle.fields).toBe("backgroundColor,foregroundColor");
+
+    await client.close();
+  });
+
+  it("styles multiple occurrences", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue(makeDoc("foo bar foo"));
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({
+      name: "style_text",
+      arguments: { fileId: "doc-id", find: "foo", highlightColor: { red: 0.0, green: 0.78, blue: 0.33 } },
+    });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests;
+    expect(requests).toHaveLength(2);
+    expect(textOf(result)).toContain("2 occurrences");
+
+    await client.close();
+  });
+
+  it("passes rgb values directly to the API", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue(makeDoc("Hello world"));
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({
+      name: "style_text",
+      arguments: { fileId: "doc-id", find: "Hello", highlightColor: { red: 1, green: 0, blue: 0 } },
+    });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests;
+    expect(requests[0].updateTextStyle.textStyle.backgroundColor.color.rgbColor).toMatchObject(
+      { red: 1, green: 0, blue: 0 }
+    );
+
+    await client.close();
+  });
+
+  it("returns error when text not found", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue(makeDoc("Hello world"));
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({
+      name: "style_text",
+      arguments: { fileId: "doc-id", find: "missing" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockClients.docs.documents.batchUpdate).not.toHaveBeenCalled();
+
+    await client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// update_doc ==highlight== markdown syntax
+// ---------------------------------------------------------------------------
+
+describe("update_doc ==highlight== markdown syntax", () => {
+  it("maps ==text== to yellow background in full replace", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue({
+      data: { body: { content: [{ endIndex: 2 }] } },
+    });
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({
+      name: "update_doc",
+      arguments: { fileId: "doc-id", content: "==important== text" },
+    });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests as Array<Record<string, unknown>>;
+    const styleReqs = requests.filter((r) => r.updateTextStyle) as Array<{ updateTextStyle: { textStyle: { backgroundColor?: unknown }; fields: string } }>;
+    expect(styleReqs.some((r) => r.updateTextStyle.fields.includes("backgroundColor"))).toBe(true);
 
     await client.close();
   });
