@@ -1,6 +1,6 @@
 {
   "name": "@pantareh/mcp-gdrive-sa",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "MCP server for Google Drive using service account authentication",
   "type": "module",
   "bin": {
