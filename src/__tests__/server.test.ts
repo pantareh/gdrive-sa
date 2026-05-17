@@ -17,9 +17,14 @@ function createMockClients() {
         export: vi.fn(),
         update: vi.fn(),
       },
+      comments: {
+        list: vi.fn(),
+        create: vi.fn(),
+      },
     },
     docs: {
       documents: {
+        get: vi.fn(),
         batchUpdate: vi.fn(),
       },
     },
@@ -173,7 +178,7 @@ describe("listTools", () => {
 
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(9);
     const names = tools.map((t) => t.name);
     expect(names).toContain("search");
     expect(names).toContain("list_folder");
@@ -182,6 +187,8 @@ describe("listTools", () => {
     expect(names).toContain("update_file");
     expect(names).toContain("update_doc");
     expect(names).toContain("update_sheet");
+    expect(names).toContain("list_comments");
+    expect(names).toContain("add_comment");
 
     await client.close();
   });
@@ -507,23 +514,65 @@ describe("update_file tool", () => {
 // ---------------------------------------------------------------------------
 
 describe("update_doc tool", () => {
-  it("replaces full document content via Drive API when 'content' is provided", async () => {
+  it("replaces full document content using Docs API with markdown formatting", async () => {
     const mockClients = createMockClients();
-    mockClients.drive.files.update.mockResolvedValue({ data: {} });
+    mockClients.docs.documents.get.mockResolvedValue({
+      data: { body: { content: [{ endIndex: 2 }] } },
+    });
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
 
     const client = await connect(mockClients);
     const result = await client.callTool({
       name: "update_doc",
-      arguments: { fileId: "doc-id", content: "# New content" },
+      arguments: { fileId: "doc-id", content: "# Hello\nWorld" },
     });
 
     expect(result.isError).toBeFalsy();
-    expect(mockClients.drive.files.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fileId: "doc-id",
-        media: expect.objectContaining({ mimeType: "text/plain", body: "# New content" }),
-      })
-    );
+    expect(mockClients.docs.documents.get).toHaveBeenCalledWith({ documentId: "doc-id" });
+    const batchCall = mockClients.docs.documents.batchUpdate.mock.calls[0][0];
+    const requests = batchCall.requestBody.requests as Array<Record<string, unknown>>;
+    const insertTexts = requests.filter((r) => r.insertText).map((r) => (r.insertText as { text: string }).text);
+    expect(insertTexts).toContain("Hello\n");
+    expect(insertTexts).toContain("World");
+    const paraStyles = requests
+      .filter((r) => r.updateParagraphStyle)
+      .map((r) => ((r.updateParagraphStyle as { paragraphStyle: { namedStyleType: string } }).paragraphStyle.namedStyleType));
+    expect(paraStyles).toContain("HEADING_1");
+    expect(paraStyles).toContain("NORMAL_TEXT");
+
+    await client.close();
+  });
+
+  it("deletes existing content before inserting when doc is non-empty", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue({
+      data: { body: { content: [{ endIndex: 20 }] } }, // non-empty doc
+    });
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({ name: "update_doc", arguments: { fileId: "doc-id", content: "Hello" } });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests;
+    expect(requests[0]).toMatchObject({ deleteContentRange: { range: { startIndex: 1, endIndex: 19 } } });
+
+    await client.close();
+  });
+
+  it("maps bold and italic inline markdown to text styles", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue({
+      data: { body: { content: [{ endIndex: 2 }] } },
+    });
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({ name: "update_doc", arguments: { fileId: "doc-id", content: "**bold** and *italic*" } });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests as Array<Record<string, unknown>>;
+    const styleRequests = requests.filter((r) => r.updateTextStyle).map((r) => r.updateTextStyle as { textStyle: Record<string, unknown> });
+    expect(styleRequests.some((r) => r.textStyle.bold === true)).toBe(true);
+    expect(styleRequests.some((r) => r.textStyle.italic === true)).toBe(true);
 
     await client.close();
   });
@@ -643,6 +692,119 @@ describe("update_sheet tool", () => {
     expect(mockClients.sheets.spreadsheets.values.update).toHaveBeenCalledWith(
       expect.objectContaining({ valueInputOption: "RAW" })
     );
+
+    await client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list_comments tool
+// ---------------------------------------------------------------------------
+
+describe("list_comments tool", () => {
+  it("returns comments as JSON", async () => {
+    const mockClients = createMockClients();
+    const comments = [
+      { id: "c1", content: "Great point", author: { displayName: "Alice" }, createdTime: "2024-01-01T00:00:00Z", replies: [] },
+      { id: "c2", content: "Needs work", author: { displayName: "Bob" }, createdTime: "2024-01-02T00:00:00Z", replies: [] },
+    ];
+    mockClients.drive.comments.list.mockResolvedValue({ data: { comments } });
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({ name: "list_comments", arguments: { fileId: "doc-id" } });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockClients.drive.comments.list).toHaveBeenCalledWith(
+      expect.objectContaining({ fileId: "doc-id", includeDeleted: false })
+    );
+    expect(JSON.parse(textOf(result))).toEqual(comments);
+
+    await client.close();
+  });
+
+  it("passes includeDeleted when specified", async () => {
+    const mockClients = createMockClients();
+    mockClients.drive.comments.list.mockResolvedValue({ data: { comments: [] } });
+
+    const client = await connect(mockClients);
+    await client.callTool({ name: "list_comments", arguments: { fileId: "doc-id", includeDeleted: true } });
+
+    expect(mockClients.drive.comments.list).toHaveBeenCalledWith(
+      expect.objectContaining({ includeDeleted: true })
+    );
+
+    await client.close();
+  });
+
+  it("returns empty array when no comments", async () => {
+    const mockClients = createMockClients();
+    mockClients.drive.comments.list.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({ name: "list_comments", arguments: { fileId: "doc-id" } });
+
+    expect(JSON.parse(textOf(result))).toEqual([]);
+
+    await client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add_comment tool
+// ---------------------------------------------------------------------------
+
+describe("add_comment tool", () => {
+  it("creates a document-level comment", async () => {
+    const mockClients = createMockClients();
+    const created = { id: "c1", content: "Looks good", author: { displayName: "Alice" }, createdTime: "2024-01-01T00:00:00Z" };
+    mockClients.drive.comments.create.mockResolvedValue({ data: created });
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({ name: "add_comment", arguments: { fileId: "doc-id", content: "Looks good" } });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockClients.drive.comments.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileId: "doc-id",
+        requestBody: expect.objectContaining({ content: "Looks good" }),
+      })
+    );
+    expect(JSON.parse(textOf(result))).toEqual(created);
+
+    await client.close();
+  });
+
+  it("anchors comment to quoted text when quotedText is provided", async () => {
+    const mockClients = createMockClients();
+    mockClients.drive.comments.create.mockResolvedValue({ data: { id: "c2" } });
+
+    const client = await connect(mockClients);
+    await client.callTool({
+      name: "add_comment",
+      arguments: { fileId: "doc-id", content: "Check this", quotedText: "important passage" },
+    });
+
+    expect(mockClients.drive.comments.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestBody: expect.objectContaining({
+          content: "Check this",
+          quotedFileContent: { mimeType: "text/plain", value: "important passage" },
+        }),
+      })
+    );
+
+    await client.close();
+  });
+
+  it("does not set quotedFileContent when quotedText is omitted", async () => {
+    const mockClients = createMockClients();
+    mockClients.drive.comments.create.mockResolvedValue({ data: { id: "c3" } });
+
+    const client = await connect(mockClients);
+    await client.callTool({ name: "add_comment", arguments: { fileId: "doc-id", content: "Note" } });
+
+    const call = mockClients.drive.comments.create.mock.calls[0][0];
+    expect(call.requestBody.quotedFileContent).toBeUndefined();
 
     await client.close();
   });

@@ -93,6 +93,69 @@ Get metadata for a file (name, mimeType, size, owners, parents, etc.).
 fileId     (required) Drive file ID
 ```
 
+### `update_file`
+Update the content of a plain-text or binary Drive file.
+
+```
+fileId     (required) Drive file ID
+content    (required) New file content
+mimeType   (optional) MIME type — defaults to the file's existing type
+```
+
+### `update_doc`
+Update a Google Doc. Two modes:
+
+- **Full replace** (`content`): replaces the entire document using the Docs API with format-aware conversion. Markdown syntax is mapped to native Google Docs styles:
+
+  | Markdown | Google Docs style |
+  |---|---|
+  | `# Heading` | Heading 1 |
+  | `## Heading` | Heading 2 |
+  | `### Heading` | Heading 3 |
+  | `**text**` | Bold |
+  | `*text*` or `_text_` | Italic |
+  | `***text***` | Bold + Italic |
+  | Plain text | Normal Text |
+
+- **Find and replace** (`find` + `replaceWith`): replaces all occurrences of `find` in the document. The existing paragraph style (heading, body, etc.) of the matched text is preserved.
+
+```
+fileId       (required) Google Doc file ID
+content      (optional) New full document text (markdown supported)
+find         (optional) Text to search for
+replaceWith  (optional) Replacement text
+matchCase    (optional) Case-sensitive match, default true
+```
+
+### `update_sheet`
+Update a range of cells in a Google Sheet.
+
+```
+fileId            (required) Google Sheets file ID
+range             (required) A1 notation, e.g. "Sheet1!A1:C3"
+values            (required) 2D array of cell values
+valueInputOption  (optional) "RAW" or "USER_ENTERED" (default)
+```
+
+### `list_comments`
+List all comments and their replies on a Google Doc.
+
+```
+fileId          (required) Google Drive file ID
+includeDeleted  (optional) Include deleted comments, default false
+```
+
+Each comment includes author, timestamp, content, resolved status, quoted passage, and any replies.
+
+### `add_comment`
+Add a comment to a Google Doc. Optionally anchor it to a specific passage.
+
+```
+fileId       (required) Google Drive file ID
+content      (required) Comment text
+quotedText   (optional) Passage in the document to anchor the comment to
+```
+
 ## Resources
 
 When `GDRIVE_ROOT_FOLDER_ID` is set, the server exposes files in that folder as MCP resources, accessible via URIs of the form `gdrive:///<fileId>`.
