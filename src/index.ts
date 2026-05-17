@@ -13,11 +13,13 @@ if (!CREDENTIAL_PATH) {
 
 const auth = new google.auth.GoogleAuth({
   keyFile: CREDENTIAL_PATH,
-  scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+  scopes: ["https://www.googleapis.com/auth/drive"],
 });
 
 const drive = google.drive({ version: "v3", auth });
-const server = createServer(drive, ROOT_FOLDER_ID);
+const docs = google.docs({ version: "v1", auth });
+const sheets = google.sheets({ version: "v4", auth });
+const server = createServer({ drive, docs, sheets }, ROOT_FOLDER_ID);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

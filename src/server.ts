@@ -5,7 +5,7 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { drive_v3 } from "googleapis";
+import { docs_v1, drive_v3, sheets_v4 } from "googleapis";
 
 export const EXPORT_MIME_TYPES: Record<string, { mimeType: string; ext: string }> = {
   "application/vnd.google-apps.document": { mimeType: "text/markdown", ext: "md" },
@@ -13,6 +13,12 @@ export const EXPORT_MIME_TYPES: Record<string, { mimeType: string; ext: string }
   "application/vnd.google-apps.presentation": { mimeType: "text/plain", ext: "txt" },
   "application/vnd.google-apps.drawing": { mimeType: "image/png", ext: "png" },
 };
+
+export interface DriveClients {
+  drive: drive_v3.Drive;
+  docs: docs_v1.Docs;
+  sheets: sheets_v4.Sheets;
+}
 
 export async function getFileContent(
   drive: drive_v3.Drive,
@@ -34,7 +40,9 @@ export async function getFileContent(
   return { content: res.data as string, mimeType };
 }
 
-export function createServer(drive: drive_v3.Drive, rootFolderId?: string): Server {
+export function createServer(clients: DriveClients, rootFolderId?: string): Server {
+  const { drive, docs, sheets } = clients;
+
   const server = new Server(
     { name: "gdrive-sa", version: "1.0.0" },
     { capabilities: { resources: {}, tools: {} } }
@@ -85,6 +93,56 @@ export function createServer(drive: drive_v3.Drive, rootFolderId?: string): Serv
             fileId: { type: "string", description: "Google Drive file ID" },
           },
           required: ["fileId"],
+        },
+      },
+      {
+        name: "update_file",
+        description: "Update the content of a plain-text or binary Drive file",
+        inputSchema: {
+          type: "object",
+          properties: {
+            fileId: { type: "string", description: "Google Drive file ID" },
+            content: { type: "string", description: "New file content" },
+            mimeType: { type: "string", description: "MIME type (defaults to the file's existing type)" },
+          },
+          required: ["fileId", "content"],
+        },
+      },
+      {
+        name: "update_doc",
+        description: "Update a Google Doc. Supply 'content' to replace the full document text, or 'find'+'replaceWith' for targeted find-and-replace.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            fileId: { type: "string", description: "Google Doc file ID" },
+            content: { type: "string", description: "New full document text (plain text or markdown)" },
+            find: { type: "string", description: "Text to search for (used with replaceWith)" },
+            replaceWith: { type: "string", description: "Replacement text (used with find)" },
+            matchCase: { type: "boolean", description: "Case-sensitive find (default true)" },
+          },
+          required: ["fileId"],
+        },
+      },
+      {
+        name: "update_sheet",
+        description: "Update a range of cells in a Google Sheet",
+        inputSchema: {
+          type: "object",
+          properties: {
+            fileId: { type: "string", description: "Google Sheets file ID" },
+            range: { type: "string", description: "A1 notation range, e.g. 'Sheet1!A1:C3'" },
+            values: {
+              type: "array",
+              description: "2D array of cell values",
+              items: { type: "array", items: { type: "string" } },
+            },
+            valueInputOption: {
+              type: "string",
+              enum: ["RAW", "USER_ENTERED"],
+              description: "How to interpret input values (default: USER_ENTERED)",
+            },
+          },
+          required: ["fileId", "range", "values"],
         },
       },
     ],
@@ -151,6 +209,68 @@ export function createServer(drive: drive_v3.Drive, rootFolderId?: string): Serv
         fields: "id,name,mimeType,modifiedTime,createdTime,size,webViewLink,owners,shared,parents",
       });
       return { content: [{ type: "text", text: JSON.stringify(res.data, null, 2) }] };
+    }
+
+    if (name === "update_file") {
+      const { fileId, content, mimeType: contentMime } = args as {
+        fileId: string;
+        content: string;
+        mimeType?: string;
+      };
+      const meta = await drive.files.get({ fileId, fields: "mimeType" });
+      const fileMime = contentMime ?? meta.data.mimeType ?? "text/plain";
+      await drive.files.update({
+        fileId,
+        requestBody: {},
+        media: { mimeType: fileMime, body: content },
+      });
+      return { content: [{ type: "text", text: `File ${fileId} updated successfully` }] };
+    }
+
+    if (name === "update_doc") {
+      const { fileId, content, find, replaceWith, matchCase = true } = args as {
+        fileId: string;
+        content?: string;
+        find?: string;
+        replaceWith?: string;
+        matchCase?: boolean;
+      };
+      if (find !== undefined && replaceWith !== undefined) {
+        await docs.documents.batchUpdate({
+          documentId: fileId,
+          requestBody: {
+            requests: [{ replaceAllText: { containsText: { text: find, matchCase }, replaceText: replaceWith } }],
+          },
+        });
+        return { content: [{ type: "text", text: `Replaced "${find}" with "${replaceWith}" in document ${fileId}` }] };
+      }
+      if (content !== undefined) {
+        await drive.files.update({
+          fileId,
+          media: { mimeType: "text/plain", body: content },
+        });
+        return { content: [{ type: "text", text: `Document ${fileId} content replaced` }] };
+      }
+      return {
+        content: [{ type: "text", text: "Provide 'content' for full replacement or 'find'+'replaceWith' for targeted edit" }],
+        isError: true,
+      };
+    }
+
+    if (name === "update_sheet") {
+      const { fileId, range, values, valueInputOption = "USER_ENTERED" } = args as {
+        fileId: string;
+        range: string;
+        values: string[][];
+        valueInputOption?: string;
+      };
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: fileId,
+        range,
+        valueInputOption,
+        requestBody: { values },
+      });
+      return { content: [{ type: "text", text: `Range ${range} in spreadsheet ${fileId} updated` }] };
     }
 
     return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
