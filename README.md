@@ -122,6 +122,17 @@ The `prepare` script runs `npm run build` automatically before publishing, so `d
 
 > **Scoped package note:** the first time you publish a scoped package (`@pantareh/...`), npm defaults to private. The `publishConfig.access = "public"` in `package.json` overrides this automatically, so no extra flags are needed.
 
+### Publishing via GitHub Actions (recommended)
+
+A workflow in `.github/workflows/publish.yml` publishes automatically when a version tag is pushed. It uses an `NPM_TOKEN` secret stored in the repo — no local credentials needed.
+
+```bash
+npm version patch        # bumps version and creates a git tag
+git push --follow-tags   # pushes commits + tag, triggering the workflow
+```
+
+> **Note:** pushing commits alone does **not** trigger the workflow — the tag push is what fires it.
+
 ## Development
 
 ```bash
