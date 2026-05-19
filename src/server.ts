@@ -66,7 +66,7 @@ function parseMarkdownParagraphs(markdown: string): ParsedParagraph[] {
   });
 }
 
-function buildMarkdownRequests(paragraphs: ParsedParagraph[], bodyEndIndex: number): docs_v1.Schema$Request[] {
+function buildMarkdownRequests(paragraphs: ParsedParagraph[], bodyEndIndex: number, clearBullets = false): docs_v1.Schema$Request[] {
   const requests: docs_v1.Schema$Request[] = [];
 
   if (bodyEndIndex > 2) {
@@ -83,14 +83,19 @@ function buildMarkdownRequests(paragraphs: ParsedParagraph[], bodyEndIndex: numb
       requests.push({ insertText: { location: { index: idx }, text: insertText } });
     }
 
+    const paraRange = { startIndex: idx, endIndex: idx + para.plainText.length + 1 };
+
     // Style range always includes the trailing \n (inserted or the doc's existing final one)
     requests.push({
       updateParagraphStyle: {
-        range: { startIndex: idx, endIndex: idx + para.plainText.length + 1 },
+        range: paraRange,
         paragraphStyle: { namedStyleType: para.namedStyleType },
         fields: "namedStyleType",
       },
     });
+
+    // Optionally remove inherited bullet/list formatting
+    if (clearBullets) requests.push({ deleteParagraphBullets: { range: paraRange } });
 
     // Inline bold / italic / highlight
     let runIdx = idx;
@@ -220,7 +225,8 @@ export function createServer(clients: DriveClients, rootFolderId?: string): Serv
             content: { type: "string", description: "New full document text (plain text or markdown)" },
             find: { type: "string", description: "Text to search for (used with replaceWith)" },
             replaceWith: { type: "string", description: "Replacement text (used with find)" },
-            matchCase: { type: "boolean", description: "Case-sensitive find (default true)" },
+            matchCase:    { type: "boolean", description: "Case-sensitive find (default true)" },
+            clearBullets: { type: "boolean", description: "Remove bullet/list formatting from inserted paragraphs (default false — bullets are inherited from the insertion context)" },
           },
           required: ["fileId"],
         },
@@ -370,12 +376,13 @@ export function createServer(clients: DriveClients, rootFolderId?: string): Serv
     }
 
     if (name === "update_doc") {
-      const { fileId, content, find, replaceWith, matchCase = true } = args as {
+      const { fileId, content, find, replaceWith, matchCase = true, clearBullets = false } = args as {
         fileId: string;
         content?: string;
         find?: string;
         replaceWith?: string;
         matchCase?: boolean;
+        clearBullets?: boolean;
       };
       if (find !== undefined && replaceWith !== undefined) {
         await docs.documents.batchUpdate({
@@ -391,7 +398,7 @@ export function createServer(clients: DriveClients, rootFolderId?: string): Serv
         const bodyContent = doc.data.body?.content ?? [];
         const bodyEndIndex = bodyContent.at(-1)?.endIndex ?? 2;
         const paragraphs = parseMarkdownParagraphs(content);
-        const requests = buildMarkdownRequests(paragraphs, bodyEndIndex);
+        const requests = buildMarkdownRequests(paragraphs, bodyEndIndex, clearBullets);
         await docs.documents.batchUpdate({ documentId: fileId, requestBody: { requests } });
         return { content: [{ type: "text", text: `Document ${fileId} updated with formatted content` }] };
       }

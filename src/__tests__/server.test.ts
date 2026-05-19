@@ -544,6 +544,44 @@ describe("update_doc tool", () => {
     await client.close();
   });
 
+  it("does not emit deleteParagraphBullets by default", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue({
+      data: { body: { content: [{ endIndex: 2 }] } },
+    });
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({
+      name: "update_doc",
+      arguments: { fileId: "doc-id", content: "# Heading\nParagraph one\nParagraph two" },
+    });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests as Array<Record<string, unknown>>;
+    expect(requests.filter((r) => r.deleteParagraphBullets)).toHaveLength(0);
+
+    await client.close();
+  });
+
+  it("emits deleteParagraphBullets for every paragraph when clearBullets is true", async () => {
+    const mockClients = createMockClients();
+    mockClients.docs.documents.get.mockResolvedValue({
+      data: { body: { content: [{ endIndex: 2 }] } },
+    });
+    mockClients.docs.documents.batchUpdate.mockResolvedValue({ data: {} });
+
+    const client = await connect(mockClients);
+    await client.callTool({
+      name: "update_doc",
+      arguments: { fileId: "doc-id", content: "# Heading\nParagraph one\nParagraph two", clearBullets: true },
+    });
+
+    const requests = mockClients.docs.documents.batchUpdate.mock.calls[0][0].requestBody.requests as Array<Record<string, unknown>>;
+    expect(requests.filter((r) => r.deleteParagraphBullets)).toHaveLength(3);
+
+    await client.close();
+  });
+
   it("deletes existing content before inserting when doc is non-empty", async () => {
     const mockClients = createMockClients();
     mockClients.docs.documents.get.mockResolvedValue({
