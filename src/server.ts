@@ -332,6 +332,31 @@ export function createServer(clients: DriveClients, rootFolderId?: string): Serv
       const { fileId } = args as { fileId: string };
       const meta = await drive.files.get({ fileId, fields: "id,name,mimeType" });
       const mimeType = meta.data.mimeType ?? "application/octet-stream";
+
+      // Google Docs: export markdown for text + HTML to extract embedded images
+      if (mimeType === "application/vnd.google-apps.document") {
+        const [mdRes, htmlRes] = await Promise.all([
+          drive.files.export({ fileId, mimeType: "text/markdown" }, { responseType: "text" }),
+          drive.files.export({ fileId, mimeType: "text/html" }, { responseType: "text" }),
+        ]);
+        const markdown = mdRes.data as string;
+        const html = htmlRes.data as string;
+        const items: Array<
+          | { type: "text"; text: string }
+          | { type: "resource"; resource: { uri: string; mimeType: string; blob: string } }
+        > = [{ type: "text", text: markdown }];
+        const imgRe = /src="data:([^;]+);base64,([^"]+)"/g;
+        let m: RegExpExecArray | null;
+        let i = 0;
+        while ((m = imgRe.exec(html)) !== null) {
+          items.push({
+            type: "resource",
+            resource: { uri: `gdrive:///${fileId}/image/${++i}`, mimeType: m[1], blob: m[2] },
+          });
+        }
+        return { content: items };
+      }
+
       const { content, mimeType: resultMime } = await getFileContent(drive, fileId, mimeType);
       const isText = resultMime.startsWith("text/") || resultMime === "application/json";
       return {

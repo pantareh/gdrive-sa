@@ -346,7 +346,10 @@ describe("read_file tool", () => {
     mockClients.drive.files.get.mockResolvedValue({
       data: { id: "doc-id", name: "My Doc", mimeType: "application/vnd.google-apps.document" },
     });
-    mockClients.drive.files.export.mockResolvedValue({ data: "# My Document\n\nHello world" });
+    // Two parallel exports: markdown + HTML (no images in HTML)
+    mockClients.drive.files.export
+      .mockResolvedValueOnce({ data: "# My Document\n\nHello world" })
+      .mockResolvedValueOnce({ data: "<html><body><p>Hello world</p></body></html>" });
 
     const client = await connect(mockClients);
     const result = await client.callTool({ name: "read_file", arguments: { fileId: "doc-id" } });
@@ -354,6 +357,53 @@ describe("read_file tool", () => {
     expect(result.isError).toBeFalsy();
     expect((result.content as ContentItem[])[0].type).toBe("text");
     expect(textOf(result)).toBe("# My Document\n\nHello world");
+
+    await client.close();
+  });
+
+  it("returns images as resource blobs alongside text for a Google Doc", async () => {
+    const mockClients = createMockClients();
+    mockClients.drive.files.get.mockResolvedValue({
+      data: { id: "doc-id", name: "My Doc", mimeType: "application/vnd.google-apps.document" },
+    });
+    const fakeBase64 = "iVBORw0KGgo=";
+    mockClients.drive.files.export
+      .mockResolvedValueOnce({ data: "# Doc\n\nText" })
+      .mockResolvedValueOnce({
+        data: `<html><body><p>Text</p><img src="data:image/png;base64,${fakeBase64}"/></body></html>`,
+      });
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({ name: "read_file", arguments: { fileId: "doc-id" } });
+
+    const items = result.content as ContentItem[];
+    expect(items).toHaveLength(2);
+    expect(items[0].type).toBe("text");
+    expect(items[1].type).toBe("resource");
+    expect(items[1].resource?.mimeType).toBe("image/png");
+    expect(items[1].resource?.blob).toBe(fakeBase64);
+
+    await client.close();
+  });
+
+  it("returns multiple images when a Google Doc has more than one", async () => {
+    const mockClients = createMockClients();
+    mockClients.drive.files.get.mockResolvedValue({
+      data: { id: "doc-id", mimeType: "application/vnd.google-apps.document" },
+    });
+    mockClients.drive.files.export
+      .mockResolvedValueOnce({ data: "text" })
+      .mockResolvedValueOnce({
+        data: `<img src="data:image/png;base64,AAA="/> <img src="data:image/jpeg;base64,BBB="/>`,
+      });
+
+    const client = await connect(mockClients);
+    const result = await client.callTool({ name: "read_file", arguments: { fileId: "doc-id" } });
+
+    const items = result.content as ContentItem[];
+    expect(items).toHaveLength(3); // text + 2 images
+    expect((items[1].resource as { uri: string }).uri).toBe("gdrive:///doc-id/image/1");
+    expect((items[2].resource as { uri: string }).uri).toBe("gdrive:///doc-id/image/2");
 
     await client.close();
   });
